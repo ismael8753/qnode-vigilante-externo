@@ -67,7 +67,7 @@ def leer_buzon(gist_id: str, owner: str, token: str | None, get=_get, dormir=tim
                     detalle = "api: json ilegible"
             else:
                 detalle = f"api http {code}: {cuerpo[:80]}"
-        code, cuerpo = get(RAW.format(owner=owner, id=gist_id, fichero=ARCHIVO_ROSTER) + f"?t={int(time.time())}")
+        code, cuerpo = get(RAW.format(owner=owner, id=gist_id, fichero=ARCHIVO_ROSTER) + f"?t={int(time.time())}") if owner else (None, "sin dueño del gist: no hay modo crudo")
         if code == 200:
             try:
                 roster = json.loads(cuerpo)
@@ -87,14 +87,26 @@ def leer_buzon(gist_id: str, owner: str, token: str | None, get=_get, dormir=tim
     return None, detalle
 
 
+def _num(x, defecto: float = 0.0) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return defecto
+
+
 def estado_robot(r: dict, u: dict | None, now: dt.datetime) -> tuple[str, float | None]:
-    """LA LEY por robot (idéntica a qnode/guardian/hombre_muerto.py::estado_robot)."""
-    if not u:
+    """LA LEY por robot (idéntica a qnode/guardian/hombre_muerto.py::estado_robot) · a prueba de basura: un latido que no es un
+    objeto = SIN_LATIDO · un rc ilegible = FALLO (nunca verde por basura) · un plazo ilegible = tope 0 (todo latido viejo es MUDO)."""
+    if not u or not isinstance(u, dict):
         return "SIN_LATIDO", None
     t = _parse(u.get("ts"))
     edad_min = round((now - t).total_seconds() / 60.0, 1) if t else None
-    tope = float(r.get("periodo_min") or 0) + float(r.get("gracia_min") or 0)
-    if int(u.get("rc") or 0) != 0:
+    tope = _num(r.get("periodo_min") or 0) + _num(r.get("gracia_min") or 0)
+    try:
+        rc = int(u.get("rc") or 0)
+    except (TypeError, ValueError):
+        rc = -1
+    if rc != 0:
         return "FALLO", edad_min
     if edad_min is None or edad_min > tope:
         return "MUDO", edad_min
@@ -111,7 +123,7 @@ def censar(ficheros: dict[str, str] | None, now: dt.datetime, simular_mudo: str 
         roster = json.loads(ficheros.get(ARCHIVO_ROSTER) or "{}")
     except json.JSONDecodeError:
         roster = {}
-    robots_def = roster.get("robots") or []
+    robots_def = [r for r in ((roster.get("robots") if isinstance(roster, dict) else None) or []) if isinstance(r, dict)]
     if not robots_def:
         return {**base, "veredicto": "SIN_DATO", "motivo": "el buzón no tiene roster.json (corre --configurar-externo en el PC)", "robots": []}
     robots, mudos, fallos, sin_latido = [], [], [], []
@@ -126,7 +138,7 @@ def censar(ficheros: dict[str, str] | None, now: dt.datetime, simular_mudo: str 
         if simulado:
             estado = "MUDO"
         robots.append({"slug": slug, "tarea": r.get("tarea"), "norte": bool(r.get("norte")), "estado": estado + (" (SIMULADO)" if simulado else ""),
-                       "edad_min": edad_min, "tope_min": float(r.get("periodo_min") or 0) + float(r.get("gracia_min") or 0), "rc": (u or {}).get("rc") if isinstance(u, dict) else None})
+                       "edad_min": edad_min, "tope_min": _num(r.get("periodo_min") or 0) + _num(r.get("gracia_min") or 0), "rc": (u or {}).get("rc") if isinstance(u, dict) else None})
         {"MUDO": mudos, "FALLO": fallos, "SIN_LATIDO": sin_latido}.get(estado, []).append(slug)
     n = len(robots_def)
     if mudos or fallos:
@@ -163,7 +175,9 @@ def _escribir_salidas(st: dict, texto: str, now: dt.datetime) -> None:
     salida = os.environ.get("GITHUB_OUTPUT")
     if salida:
         with open(salida, "a", encoding="utf-8") as fh:
-            fh.write(f"veredicto={st['veredicto']}\nresumen={st['motivo'][:200]}\n")
+            resumen = " ".join(str(st.get("motivo", "")).split())[:200]  # una sola línea, sin saltos
+            marca = f"QNODE_EOF_{int(now.timestamp())}"
+            fh.write(f"veredicto={st['veredicto']}\nresumen<<{marca}\n{resumen}\n{marca}\n")
     resumen = os.environ.get("GITHUB_STEP_SUMMARY")
     if resumen:
         with open(resumen, "a", encoding="utf-8") as fh:
