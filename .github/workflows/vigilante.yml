@@ -1,0 +1,68 @@
+# Comprobador externo del hombre muerto de Q-Node · corre FUERA del PC (GitHub Actions · repo público: minutos gratis).
+# Cada 15 min (minuto impar: el cron de GitHub se retrasa en las horas en punto) lee el buzón de latidos y, si un robot calla
+# más de periodo+gracia o acabó mal, el run FALLA (GitHub manda correo al dueño) y se abre/actualiza una issue asignada.
+# La plantilla vive en Q-Node (qnode/guardian/vigilante_externo/vigilante.yml) y la publica `hombre_muerto --configurar-externo`.
+name: vigilante
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      simular_mudo:
+        description: "prueba de fuego: slug de un robot que se da por mudo a propósito (vacío = vuelta normal)"
+        required: false
+        default: ""
+permissions:
+  contents: write
+  issues: write
+  actions: write
+concurrency:
+  group: vigilante
+  cancel-in-progress: false
+jobs:
+  comprobar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: censo del buzón de latidos (la misma ley que el censo local)
+        id: censo
+        continue-on-error: true
+        env:
+          QNODE_GIST_ID: ${{ secrets.QNODE_GIST_ID }}
+          QNODE_GIST_OWNER: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QNODE_SIMULAR_MUDO: ${{ inputs.simular_mudo }}
+        run: python3 comprobador.py
+      - name: aviso · issue asignada al dueño (abrir, comentar o cerrar)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DUENO: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VEREDICTO: ${{ steps.censo.outputs.veredicto }}
+          RESUMEN: ${{ steps.censo.outputs.resumen }}
+        run: python3 avisar.py
+      - name: latido del repo · una vez al día (red doble contra el apagado del cron a los 60 días · nunca falla el run)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latidos/ultimo_dia.txt
+          if git diff --cached --quiet; then
+            echo "sin cambios hoy"
+          else
+            git commit -m "latido del repo $(date -u +%F)"
+            git pull --rebase --quiet origin "${GITHUB_REF_NAME}" || true
+            git push || echo "push rechazado (carrera con otro run): lo reintenta la siguiente vuelta"
+            gh api -X PUT "repos/${REPO}/actions/workflows/vigilante.yml/enable" && echo "workflow re-encendido por API (red doble)" || echo "re-encendido por API no disponible"
+          fi
+      - name: veredicto · rojo = el run falla y GitHub te escribe
+        env:
+          VEREDICTO: ${{ steps.censo.outputs.veredicto }}
+        run: |
+          echo "veredicto: ${VEREDICTO:-SIN_DATO}"
+          case "${VEREDICTO:-SIN_DATO}" in OK|AVISO) exit 0 ;; *) exit 1 ;; esac
