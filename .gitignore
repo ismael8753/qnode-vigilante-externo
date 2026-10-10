@@ -1,0 +1,3 @@
+# estado de cada run (cambia cada 15 min · no se versiona) · solo latidos/ultimo_dia.txt entra al repo (un commit al día)
+estado.json
+__pycache__/
