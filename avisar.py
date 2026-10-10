@@ -16,8 +16,11 @@ import sys
 ETIQUETA = "hombre-muerto"
 
 
-def decidir(veredicto: str, n_abiertas: int) -> str:
-    """'abrir' | 'comentar' | 'cerrar' | 'nada' · la ley: rojo o sin dato avisan; verde o aviso cierran lo abierto."""
+def decidir(veredicto: str, n_abiertas: int, lista_ok: bool = True) -> str:
+    """'abrir' | 'comentar' | 'cerrar' | 'nada' · la ley: rojo o sin dato avisan; verde o aviso cierran lo abierto ·
+    si NO se pudo leer la lista de issues (lista_ok False) no se toca nada: jamás una issue duplicada por un fallo de la API."""
+    if not lista_ok:
+        return "nada"
     if veredicto in ("ROJO", "SIN_DATO"):
         return "comentar" if n_abiertas else "abrir"
     return "cerrar" if n_abiertas else "nada"
@@ -42,21 +45,28 @@ def main() -> int:
         st = {"veredicto": os.environ.get("VEREDICTO") or "SIN_DATO", "motivo": os.environ.get("RESUMEN") or "sin estado.json", "informe": ""}
     veredicto = str(st.get("veredicto") or "SIN_DATO")
     code, out = _gh(["issue", "list", "-R", repo, "--label", ETIQUETA, "--state", "open", "--json", "number"])
+    lista_ok = code == 0
     try:
         abiertas = [int(x["number"]) for x in json.loads(out or "[]")] if code == 0 else []
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        abiertas = []
-    accion = decidir(veredicto, len(abiertas))
+        abiertas, lista_ok = [], False
+    accion = decidir(veredicto, len(abiertas), lista_ok)
+    if not lista_ok:
+        print(f"no se pudo leer la lista de issues ({out[:120]}): no toco nada (sin duplicadas) · el run falla igual por el veredicto")
     cuerpo = f"**{veredicto}** · {st.get('motivo', '')}\n\n```\n{st.get('informe', '')}\n```\n\nRun: {run_url}\n\n_Lo escribe el comprobador externo del hombre muerto de Q-Node (github-actions[bot])._"
     print(f"veredicto {veredicto} · issues abiertas {len(abiertas)} · acción: {accion}")
     if accion == "abrir":
         _gh(["label", "create", ETIQUETA, "-R", repo, "--color", "B60205", "--force", "--description", "aviso del hombre muerto: un robot de Q-Node calla o acabó mal"])
         titulo = f"🫀 Hombre muerto: {veredicto} · {str(st.get('motivo', ''))[:80]}"
-        code, out = _gh(["issue", "create", "-R", repo, "--title", titulo, "--body", cuerpo, "--label", ETIQUETA, "--assignee", dueno])
+        code, out = _gh(["issue", "create", "-R", repo, "--title", titulo, "--body", cuerpo, "--label", ETIQUETA])
         print(("issue abierta: " + out) if code == 0 else ("⛔ no se pudo abrir la issue: " + out))
+        if code == 0 and dueno:  # asignar APARTE: si el dueño no es asignable (organización) la issue sigue abierta igual
+            c2, o2 = _gh(["issue", "edit", out.strip().split("/")[-1], "-R", repo, "--add-assignee", dueno])
+            print(f"asignada a {dueno}" if c2 == 0 else f"⚠️ sin asignar a {dueno}: {o2[:80]}")
     elif accion == "comentar":
-        code, out = _gh(["issue", "comment", str(abiertas[0]), "-R", repo, "--body", cuerpo])
-        print((f"issue #{abiertas[0]} comentada") if code == 0 else ("⛔ no se pudo comentar: " + out))
+        for n in abiertas:  # todas las abiertas (si hubo duplicadas a mano, ninguna se queda muda)
+            code, out = _gh(["issue", "comment", str(n), "-R", repo, "--body", cuerpo])
+            print((f"issue #{n} comentada") if code == 0 else ("⛔ no se pudo comentar: " + out))
     elif accion == "cerrar":
         for n in abiertas:
             _gh(["issue", "comment", str(n), "-R", repo, "--body", f"✅ **{veredicto}** · {st.get('motivo', '')} · todos los robots vuelven a latir.\n\nRun: {run_url}"])
