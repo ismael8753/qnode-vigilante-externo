@@ -3,7 +3,8 @@
 
 Lee el buzón de latidos (gist no listado · id en el secreto QNODE_GIST_ID): `roster.json` (periodo y gracia EN MINUTOS por robot) y un
 `latido_<slug>.json` por robot ({ts, rc}). Aplica LA MISMA LEY que el censo local de qnode/guardian/hombre_muerto.py:
-FALLO si el último latido trae rc ≠ 0 · MUDO si es más viejo que periodo+gracia · VIVO si está dentro · SIN_LATIDO si nunca latió.
+FALLO si el último latido trae rc ≠ 0 · MUDO si es más viejo que periodo+gracia · VIVO si está dentro · SIN_LATIDO si nunca latió
+(salvo con `alta` en el roster y periodo+gracia ya pasados desde ella: MUDO · 18-oct · el robot que nunca llega a correr).
 Veredicto: ROJO si hay mudos o fallos · si NADIE ha latido: AVISO, y ROJO cuando el roster lleva >48 h subido · SIN_DATO si el buzón
 no se puede leer (tras 3 intentos) · OK en el resto. Sin dato NUNCA es verde.
 Salida: informe por pantalla · estado.json (lo lee avisar.py) · latidos/ultimo_dia.txt (un commit al día mantiene el cron encendido) ·
@@ -96,12 +97,19 @@ def _num(x, defecto: float = 0.0) -> float:
 
 def estado_robot(r: dict, u: dict | None, now: dt.datetime) -> tuple[str, float | None]:
     """LA LEY por robot (idéntica a qnode/guardian/hombre_muerto.py::estado_robot) · a prueba de basura: un latido que no es un
-    objeto = SIN_LATIDO · un rc ilegible = FALLO (nunca verde por basura) · un plazo ilegible = tope 0 (todo latido viejo es MUDO)."""
+    objeto = SIN_LATIDO · un rc ilegible = FALLO (nunca verde por basura) · un plazo ilegible = tope 0 (todo latido viejo es MUDO) ·
+    18-oct (mesa pre-cierre C21 #26/#32/#40/#46 · paridad con la pieza local): si el roster trae `alta` (fecha en que el robot entró) y
+    nunca latió pasado periodo+gracia desde esa alta → MUDO (antes el robot que NUNCA corría era «sin latido aún» = OK para siempre
+    mientras los demás latían: ni correo ni issue) · un `alta` ilegible = sin alta (SIN_LATIDO, nunca MUDO por basura)."""
+    tope = _num(r.get("periodo_min") or 0) + _num(r.get("gracia_min") or 0)
     if not u or not isinstance(u, dict):
+        alta = _parse(r.get("alta"))
+        desde_alta_min = round((now - alta).total_seconds() / 60.0, 1) if alta else None
+        if desde_alta_min is not None and desde_alta_min > tope:
+            return "MUDO", desde_alta_min
         return "SIN_LATIDO", None
     t = _parse(u.get("ts"))
     edad_min = round((now - t).total_seconds() / 60.0, 1) if t else None
-    tope = _num(r.get("periodo_min") or 0) + _num(r.get("gracia_min") or 0)
     try:
         rc = int(u.get("rc") or 0)
     except (TypeError, ValueError):
